@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "障害物コース定義。obstacles の各要素は",
+    "  box: {\"kind\":\"box\", \"x\":m, \"y\":m, \"hx\":半幅m, \"hy\":半奥行m}",
+    "  cyl: {\"kind\":\"cyl\", \"x\":m, \"y\":m, \"r\":半径m}",
+    "高さは共通で height [m]。goal は [x, y] (ロボットは原点で+x向き)。",
+    "random コースはこのファイルではなく COURSE_SEED / COURSE_N_OBSTACLES で生成。"
+  ],
+  "height": 0.30,
+  "courses": {
+    "default": {
+      "goal": [2.60, -0.10],
+      "obstacles": [
+        {"kind": "box", "x": 0.80, "y": 0.02, "hx": 0.09, "hy": 0.09},
+        {"kind": "box", "x": 1.60, "y": 0.50, "hx": 0.09, "hy": 0.09},
+        {"kind": "box", "x": 1.65, "y": -0.42, "hx": 0.09, "hy": 0.09},
+        {"kind": "cyl", "x": 2.20, "y": 0.22, "r": 0.10}
+      ]
+    },
+    "slalom": {
+      "goal": [2.90, 0.0],
+      "obstacles": [
+        {"kind": "box", "x": 0.70, "y": -0.16, "hx": 0.08, "hy": 0.34},
+        {"kind": "box", "x": 1.45, "y": 0.20, "hx": 0.08, "hy": 0.34},
+        {"kind": "box", "x": 2.20, "y": -0.16, "hx": 0.08, "hy": 0.34}
+      ]
+    },
+    "wall": {
+      "goal": [2.70, 0.0],
+      "obstacles": [
+        {"kind": "box", "x": 1.00, "y": 0.0, "hx": 0.08, "hy": 0.50},
+        {"kind": "cyl", "x": 2.00, "y": 0.60, "r": 0.10}
+      ]
+    },
+    "empty": {
+      "goal": [2.00, 0.0],
+      "obstacles": []
+    }
+  },
+  "random": {
+    "goal": [2.50, 0.0],
+    "x_range": [0.55, 2.20],
+    "y_range": [-0.80, 0.80],
+    "min_start_clearance": 0.55,
+    "min_goal_clearance": 0.50,
+    "min_spacing": 0.55,
+    "box_probability": 0.6,
+    "box_half": 0.09,
+    "cyl_radius": 0.09
+  }
+}

@@ -1,0 +1,162 @@
+# リンク脚四足ロボット シミュレーション
+#
+# パラメータは .env で指定します (`cp .env.example .env`)。
+# compose は .env を自動で読み、下の env_file でコンテナにも渡します。
+# シェルで渡した値 (例 `COURSE=slalom docker compose up avoid`) が最優先。
+#
+# --- 歩容のみ ---------------------------------------------------------------
+#   docker compose up sim
+#   MODE=turn_left docker compose up sim
+#   docker compose --profile gui up sim-gui          # 事前に xhost +local:docker
+#   ARGS="--keyboard" docker compose --profile gui up sim-gui
+#
+# MODE: forward / backward / turn_left / turn_right /
+#       strafe_left / strafe_right / arc_left / stop
+#
+# --- 判断バックエンド2種 -----------------------------------------------------
+# JEV_BRAIN=ollama   (既定) 自前のJev風実装。ollamaの /api/chat を叩く
+# JEV_BRAIN=localjev local-jev サーバの /v1/systemone を叩く (確率とconfidence付き)
+# JEV_BRAIN=mock     推論なしの決定論ポリシー
+#
+#   docker compose up avoid                                  # ollama
+#   OLLAMA_HOST=http://192.168.1.50:11434 docker compose up avoid
+#   docker compose up local-jev                              # local-jevサーバ(CPU)
+#   docker compose --profile localjev-gpu up local-jev-gpu    # 同じものをGPUで
+#   JEV_BRAIN=localjev docker compose up avoid                # local-jevで走らせる
+#   COURSE=slalom docker compose --profile gui up avoid-gui
+#   ARGS="--selftest" docker compose up avoid                 # 判断だけ試験
+#   docker compose up compare                                 # 両方を並べて比較
+x-envfile: &envfile
+  env_file:
+    - path: .env
+      required: false
+
+services:
+  sim:
+    build: .
+    image: linkage-quadruped-sim
+    init: true
+    <<: *envfile
+    command: ["--mode", "${MODE:-forward}"]
+
+  sim-gui:
+    profiles: ["gui"]
+    build: .
+    image: linkage-quadruped-sim
+    init: true
+    <<: *envfile
+    network_mode: host        # X11ソケット共有 (Linux)
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # ARGS で追加引数 (例: ARGS="--keyboard")
+    entrypoint: ["/bin/sh", "-c", "exec python -u service/simulate.py --gui --mode ${MODE:-forward} ${ARGS:-}"]
+
+  # Jev(外部ollama)で判断して障害物を避ける (ヘッドレス)
+  avoid:
+    build: .
+    image: linkage-quadruped-sim
+    init: true
+    <<: *envfile
+    # ホストのollamaはループバックしか待ち受けないことが多いので、
+    # ブリッジでは host.docker.internal でも届かない (実測で Connection refused)。
+    # host ネットワークなら ollama(11434) と local-jev(8765) の両方に 127.0.0.1 で届く。
+    network_mode: host
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+      - JEV_BRAIN=${JEV_BRAIN:-ollama}
+      - LOCALJEV_URL=${LOCALJEV_URL:-http://127.0.0.1:8765}
+    entrypoint: ["/bin/sh", "-c", "exec python -u service/avoid_sim.py --course ${COURSE:-default} ${ARGS:-}"]
+
+  # 同じものをGUIで (判断結果が画面にオーバレイ表示される)
+  avoid-gui:
+    profiles: ["gui"]
+    build: .
+    image: linkage-quadruped-sim
+    init: true
+    <<: *envfile
+    network_mode: host        # X11共有 + ホストのollamaに127.0.0.1で届く
+    environment:
+      - DISPLAY=${DISPLAY}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+      - JEV_BRAIN=${JEV_BRAIN:-ollama}
+      # network_mode: host なのでサービス名ではなく公開ポートで届く
+      - LOCALJEV_URL=${LOCALJEV_URL:-http://127.0.0.1:8765}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    entrypoint: ["/bin/sh", "-c", "exec python -u service/avoid_sim.py --gui --course ${COURSE:-default} ${ARGS:-}"]
+
+  # local-jev サーバ (TypeSafe Jev ワイヤ互換の /v1/systemone)
+  # 明示的に名前を指定したときだけ起動する: docker compose up local-jev
+  local-jev:
+    profiles: ["localjev"]
+    build:
+      context: .
+      dockerfile: docker/local-jev.Dockerfile
+      args:
+        LOCALJEV_REF: ${LOCALJEV_REF:-main}
+    image: local-jev-server
+    init: true
+    ports:
+      - "8765:8765"
+    environment:
+      # nli-deberta-large (約0.9GB, 速い) / llm-qwen3.5-4b (約9.3GB, 高精度だが遅い)
+      - LOCAL_JEV_MODEL=${LOCAL_JEV_MODEL:-nli-deberta-large}
+      - LOCAL_JEV_MEMORY_GB=${LOCAL_JEV_MEMORY_GB:-}
+      - LOCAL_JEV_API_KEY=${LOCAL_JEV_API_KEY:-}
+    volumes:
+      - localjev-models:/models      # HFの重みを残して再ダウンロードを避ける
+
+  # 同じものをGPUで動かす版 (CUDA版torch + デバイス渡し)
+  # CPU版とは8765で衝突するのでどちらか一方を起動する
+  local-jev-gpu:
+    profiles: ["localjev-gpu"]
+    build:
+      context: .
+      dockerfile: docker/local-jev.Dockerfile
+      args:
+        LOCALJEV_REF: ${LOCALJEV_REF:-main}
+        # RTX 50系(Blackwell, sm_120)はcu128以降が必要
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
+    image: local-jev-server-gpu
+    init: true
+    ports:
+      - "8765:8765"
+    environment:
+      - LOCAL_JEV_MODEL=${LOCAL_JEV_MODEL:-nli-deberta-large}
+      - LOCAL_JEV_MEMORY_GB=${LOCAL_JEV_MEMORY_GB:-}
+      - LOCAL_JEV_API_KEY=${LOCAL_JEV_API_KEY:-}
+    volumes:
+      - localjev-models:/models      # CPU版と同じ重みを使い回す
+    networks:
+      default:
+        # CPU版と同じ名前でも引けるようにする
+        # (LOCALJEV_URL の既定が http://local-jev:8765 なので、GPU版だけ起動しても届く)
+        aliases: ["local-jev"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+  # 2つのバックエンドを既知6シーンで並べて比較する
+  compare:
+    profiles: ["localjev", "localjev-gpu"]
+    build: .
+    image: linkage-quadruped-sim
+    init: true
+    <<: *envfile
+    network_mode: host        # avoid と同じ理由 (上のコメント参照)
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+      - LOCALJEV_URL=${LOCALJEV_URL:-http://127.0.0.1:8765}
+    # depends_on は付けない: CPU版/GPU版のどちらを起動しているか分からないため
+    # (事前に local-jev か local-jev-gpu を healthy にしておくこと)
+    entrypoint: ["/bin/sh", "-c",
+      "exec python -u service/avoid_sim.py --selftest --compare ${COMPARE:-ollama:gemma3:12b,localjev:jev-latest,mock}"]
+
+volumes:
+  localjev-models:
